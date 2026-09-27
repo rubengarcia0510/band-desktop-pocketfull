@@ -2,37 +2,16 @@
 
 ## Setup
 
-### macOS / Linux
-
 ```bash
 python3 -m venv venv
-source venv/bin/activate
+source venv/bin/activate         # en Windows: venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env
-```
-
-### Windows (PowerShell)
-
-```powershell
-py -m venv venv
-.\venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-Copy-Item .env.example .env
 ```
 
 Completá `.env` con tu API key real de Featherless (la que te llega por mail
 al registrarte en el hackathon) y elegí un modelo del catálogo de Featherless
 en `FEATHERLESS_MODEL`.
-
-Las variables esperadas por el proyecto son:
-
-```env
-FEATHERLESS_API_KEY=tu_api_key
-FEATHERLESS_BASE_URL=https://api.featherless.ai/v1
-FEATHERLESS_MODEL=featherless-ai/Qwen/Qwen2.5-72B-Instruct
-```
-
-La biblioteca `litellm` es necesaria para que CrewAI acepte modelos OpenAI-compatible custom como los de Featherless.
 
 ## Probar localmente
 
@@ -46,17 +25,33 @@ python crew_setup.py
 Editá la variable `ROOM_BRIEF` dentro de `crew_setup.py` con una tarea de
 prueba chica (no hace falta que sea de pocketful todavía).
 
-## ⚠️ Pendiente: conectar a BAND Desktop
+## Conectar a Band (band-sdk + CrewAIAdapter)
 
-Este script corre standalone. Para que cuente como submission válida del
-hackathon, la banda tiene que vivir en BAND Desktop (registrada como
-"seats" reales, con su room, su export, etc.) — no alcanza con correrlo
-suelto en tu terminal.
+1. Instalá el extra de CrewAI del SDK (en su propio venv, choca con parlant/pydantic-ai):
+   ```bash
+   pip install "band-sdk[crewai]"
+   ```
+2. Andá a `app.band.ai`, creá un "remote agent" por cada seat (Planner,
+   Implementer, Verifier) y copiá el UUID + API key de cada uno a tu `.env`.
+3. Revisá `band_agent.py` — tiene un TODO marcado donde no tengo 100%
+   confirmado el nombre exacto del parámetro que `CrewAIAdapter` espera.
+   Antes de correrlo en serio, fijate el ejemplo real que instala el
+   paquete (carpeta `examples/crewai/` del repo `band-sdk-python`) y
+   ajustá si difiere.
+4. Corré cada seat en su propia terminal:
+   ```bash
+   python band_agent.py planner
+   python band_agent.py implementer
+   python band_agent.py verifier
+   ```
+5. Abrí Band, creá una room, agregá los 3 agentes como participantes, y
+   ahí es donde se van a coordinar.
 
-Falta confirmar cómo se conecta un agente CrewAI al **BAND SDK** (adaptador
-mencionado en la info del hackathon, pero sin documentación confirmada acá).
-Preguntá en el Discord de BAND por el adaptador de CrewAI antes de dar esto
-por terminado.
+No tengo confirmado si esto reemplaza del todo a Band Desktop o convive
+con él (Band Desktop parece más orientado al plugin de Claude Code) —
+puede que igual necesites tener Band Desktop abierto para ver el board,
+aunque los seats corran vía SDK. Confirmalo mirando la app una vez que
+tengas la room armada.
 
 ## Reglas del hackathon a no olvidar
 
