@@ -11,7 +11,7 @@ import os
 from typing import Mapping
 
 from dotenv import load_dotenv
-from crewai import Agent, Task, Crew, Process, LLM
+from crewai import Agent as CrewAIAgent, Task, Crew, Process, LLM
 
 REQUIRED_ENV_VARS = (
     "FEATHERLESS_API_KEY",
@@ -37,9 +37,14 @@ def require_env_vars(env: Mapping[str, str] | None = None) -> dict[str, str]:
 
 def build_llm(env: Mapping[str, str] | None = None) -> LLM:
     values = require_env_vars(env)
+    model_name = values["FEATHERLESS_MODEL"].strip()
+    provider_prefixes = ("openai/", "azure/", "anthropic/", "gemini/", "google/", "bedrock/")
+    if not model_name.startswith(provider_prefixes):
+        model_name = f"openai/{model_name}"
+
     try:
         return LLM(
-            model=values["FEATHERLESS_MODEL"],
+            model=model_name,
             base_url=values["FEATHERLESS_BASE_URL"],
             api_key=values["FEATHERLESS_API_KEY"],
         )
@@ -52,8 +57,23 @@ def build_llm(env: Mapping[str, str] | None = None) -> LLM:
         ) from exc
 
 
-def build_agents(llm: LLM):
-    planner = Agent(
+planner: CrewAIAgent | None = None
+implementer: CrewAIAgent | None = None
+verifier: CrewAIAgent | None = None
+
+
+def ensure_agents() -> tuple[CrewAIAgent, CrewAIAgent, CrewAIAgent]:
+    global planner, implementer, verifier
+
+    if planner is None or implementer is None or verifier is None:
+        llm = build_llm()
+        planner, implementer, verifier = build_agents(llm)
+
+    return planner, implementer, verifier
+
+
+def build_agents(llm: LLM) -> tuple[CrewAIAgent, CrewAIAgent, CrewAIAgent]:
+    planner_agent = CrewAIAgent(
         role="Planner",
         goal=(
             "Recibir una tarea y una especificación, y descomponerlas en "
@@ -70,7 +90,7 @@ def build_agents(llm: LLM):
         verbose=True,
     )
 
-    implementer = Agent(
+    implementer_agent = CrewAIAgent(
         role="Implementer",
         goal=(
             "Implementar el cambio mínimo necesario para cumplir una subtarea "
@@ -87,7 +107,7 @@ def build_agents(llm: LLM):
         verbose=True,
     )
 
-    verifier = Agent(
+    verifier_agent = CrewAIAgent(
         role="Verifier",
         goal=(
             "Verificar de forma independiente si un entregable cumple su "
@@ -104,7 +124,7 @@ def build_agents(llm: LLM):
         verbose=True,
     )
 
-    return planner, implementer, verifier
+    return planner_agent, implementer_agent, verifier_agent
 
 
 def build_crew(task_description: str) -> Crew:
@@ -113,8 +133,7 @@ def build_crew(task_description: str) -> Crew:
     TODO el detalle específico del track (endpoints, spec, criterios de
     aceptación) — nunca en los mandatos de arriba.
     """
-    llm = build_llm()
-    planner, implementer, verifier = build_agents(llm)
+    planner, implementer, verifier = ensure_agents()
 
     plan_task = Task(
         description=task_description,

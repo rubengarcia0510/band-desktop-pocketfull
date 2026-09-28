@@ -1,6 +1,8 @@
+import os
 import unittest
 from unittest.mock import patch
 
+import band_agent
 import crew_setup
 
 
@@ -20,6 +22,54 @@ class CrewSetupEnvValidationTests(unittest.TestCase):
                     "FEATHERLESS_BASE_URL": "https://api.featherless.ai/v1",
                     "FEATHERLESS_MODEL": "featherless-ai/Qwen/Qwen2.5-72B-Instruct",
                 })
+
+    def test_build_llm_prefixes_provider_for_openai_compatible_model(self):
+        with patch("crew_setup.LLM") as llm_cls:
+            crew_setup.build_llm({
+                "FEATHERLESS_API_KEY": "abc",
+                "FEATHERLESS_BASE_URL": "https://api.featherless.ai/v1",
+                "FEATHERLESS_MODEL": "featherless-ai/Qwen/Qwen2.5-72B-Instruct",
+            })
+        llm_cls.assert_called_once_with(
+            model="openai/featherless-ai/Qwen/Qwen2.5-72B-Instruct",
+            base_url="https://api.featherless.ai/v1",
+            api_key="abc",
+        )
+
+    def test_crew_setup_exports_module_level_agent_slots(self):
+        self.assertTrue(hasattr(crew_setup, "planner"))
+        self.assertTrue(hasattr(crew_setup, "implementer"))
+        self.assertTrue(hasattr(crew_setup, "verifier"))
+
+    def test_build_agents_returns_generic_roles(self):
+        planner, implementer, verifier = crew_setup.build_agents("gpt-4o-mini")
+        self.assertEqual(planner.role, "Planner")
+        self.assertEqual(implementer.role, "Implementer")
+        self.assertEqual(verifier.role, "Verifier")
+
+    def test_band_adapter_receives_provider_and_featherless_environment(self):
+        env = {
+            "FEATHERLESS_API_KEY": "test-key",
+            "FEATHERLESS_BASE_URL": "https://api.featherless.ai/v1",
+            "FEATHERLESS_MODEL": "Qwen/Qwen2.5-72B-Instruct",
+            "PLANNER_AGENT_ID": "planner-id",
+            "PLANNER_API_KEY": "planner-key",
+        }
+        with patch.dict("os.environ", env):
+            with patch("band_agent.ensure_agents", return_value=(None, None, None)):
+                with patch("band_agent.CrewAIAdapter") as adapter_cls:
+                    with patch("band_agent.Agent.create", return_value="agent"):
+                        result = band_agent.build_band_agent("planner")
+
+            self.assertEqual(result, "agent")
+            self.assertEqual(os.environ["OPENAI_API_KEY"], "test-key")
+            self.assertEqual(
+                os.environ["OPENAI_API_BASE"], "https://api.featherless.ai/v1"
+            )
+            self.assertEqual(
+                adapter_cls.call_args.kwargs["model"],
+                "openai/Qwen/Qwen2.5-72B-Instruct",
+            )
 
 
 if __name__ == "__main__":
