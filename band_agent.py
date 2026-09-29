@@ -132,9 +132,35 @@ def build_band_agent(
         if not model_name.startswith("openai/"):
             model_name = f"openai/{model_name}"
 
-        adapter = _build_planner_adapter(
-            selected_role,
-            model_name,
+        adapter = CrewAIAdapter(
+            model=model_name,
+            role=selected_role,
+            goal=(
+                "Planificar el trabajo y COMUNICARLO SIEMPRE mediante las "
+                "herramientas BAND. Cada vez que recibas un mensaje activado, "
+                "debes realizar al menos una llamada a una herramienta BAND. "
+                "Para delegar trabajo, usa band_send_message mencionando "
+                "@implementer. Nunca respondas solamente con texto."
+            ),
+            backstory=(
+                "Sos el Planner de una software factory coordinada por BAND. "
+                "Tu salida textual fuera de una herramienta no llega al Room. "
+                "Por eso, ante cada mensaje, primero debes usar las herramientas "
+                "BAND y enviar el resultado con band_send_message. "
+                "Debes coordinar al Implementer y luego al Verifier mediante "
+                "mensajes explícitos con sus menciones."
+            ),
+            custom_section=(
+                "REGLA CRITICA DE BAND: nunca finalices un turno sin llamar "
+                "a una herramienta BAND. Para comunicar cualquier respuesta "
+                "al Room usa exclusivamente band_send_message. "
+                "Cuando corresponda delegar, menciona explícitamente "
+                "@implementer o @verifier en el mensaje. "
+                "No escribas una respuesta final esperando que BAND la entregue: "
+                "debes invocar la herramienta."
+            ),
+            verbose=True,
+            max_iter=20,
         )
 
     return Agent.create(
