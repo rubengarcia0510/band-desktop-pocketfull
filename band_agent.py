@@ -132,10 +132,34 @@ def build_band_agent(
         if not model_name.startswith("openai/"):
             model_name = f"openai/{model_name}"
 
+        # CrewAIAdapter creates LLM(model=...) internally and CrewAI 1.15.5
+        # does not inherit Featherless credentials from OPENAI_* environment vars.
+        # Patch the CrewAI module locally so the adapter receives them explicitly.
+        import crewai
+        original_llm = crewai.LLM
+
+        def featherless_llm(*, model: str, **kwargs):
+            return original_llm(
+                model=model,
+                api_key=llm_config["FEATHERLESS_API_KEY"],
+                base_url=llm_config["FEATHERLESS_BASE_URL"],
+                **kwargs,
+            )
+
+        crewai.LLM = featherless_llm
+
         adapter = CrewAIAdapter(
             model=model_name,
             role=selected_role,
             goal=(
+                "Planificar exclusivamente el track Pocketful del Dark Factory. "
+                "El producto es una wallet tipo Venmo: usuarios, saldos en "
+                "unidades menores enteras, transferencias entre usuarios, "
+                "requests, splits, actividad, settlements, autenticación, "
+                "idempotencia y concurrencia segura. La especificación oficial "
+                "está en band-ai/dark-factory-wearedevs, pocketful/spec/stage-1.md. "
+                "NO inventes otro dominio, entidad o UI. NO uses ejemplos genéricos "
+                "como stage, scenario, element o StageView. "
                 "Planificar el trabajo y COMUNICARLO SIEMPRE mediante las "
                 "herramientas BAND. Cada vez que recibas un mensaje activado, "
                 "debes realizar al menos una llamada a una herramienta BAND. "
@@ -173,12 +197,7 @@ def build_band_agent(
 async def _run_seat(seat_name: str) -> None:
     agent = build_band_agent(seat_name)
 
-    await agent.start()
-
-    try:
-        await agent.run_forever()
-    finally:
-        await agent.stop()
+    await agent.run()
 
 
 if __name__ == "__main__":
