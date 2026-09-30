@@ -13,6 +13,8 @@ import sys
 from dotenv import load_dotenv
 
 from band import Agent
+from pydantic import BaseModel, Field
+from jira_client import JiraClient
 from band.adapters import CrewAIAdapter, OpencodeAdapter, OpencodeAdapterConfig
 
 from crew_setup import require_env_vars
@@ -60,6 +62,26 @@ def _require_seat_env(seat_name: str) -> dict[str, str]:
     }
 
 
+class JiraTaskInput(BaseModel):
+    summary: str = Field(description="Short Jira task summary.")
+    description: str = Field(description="Concrete implementation task description.")
+
+
+def jira_create_or_select(task: JiraTaskInput) -> str:
+    """Find an existing Jira task with this summary or create it if absent."""
+    client = JiraClient()
+    matches = client.search_by_summary(task.summary)
+
+    if matches:
+        return matches[0]["key"]
+
+    created = client.create_task(
+        summary=task.summary,
+        description=task.description,
+    )
+    return created["key"]
+
+
 PLANNER_CUSTOM_SECTION = """You are the Planner seat for the Dark Factory Pocketful track.
 
 AUTHORITATIVE SOURCE:
@@ -74,11 +96,14 @@ audit and do not repeatedly reread the repository.
 For each planning turn:
 1. Identify the single next unfinished block.
 2. Define ONE concrete implementation subtask for @implementer.
-3. Include the relevant real file paths and exact spec requirements.
-4. Define concise acceptance tests/evidence for that subtask.
-5. Delegate only that subtask to @implementer.
-6. After implementation evidence is available, ask @verifier to validate it.
-7. Use the verifier result to choose the next atomic subtask.
+3. Create or select the corresponding Jira task using the Jira tool BEFORE delegation.
+4. Include the Jira key in the delegation and require it in the implementation branch and commit.
+5. Include the relevant real file paths and exact spec requirements.
+6. Define concise acceptance tests/evidence for that subtask.
+7. Delegate only that subtask to @implementer.
+8. After implementation evidence is available, ask @verifier to validate it.
+9. Record the verifier evidence on the same Jira task.
+10. Use the verifier result to choose the next atomic subtask.
 
 Do NOT implement code yourself.
 Do NOT delegate multiple independent implementation tasks in one message.
@@ -98,6 +123,14 @@ Do not replace the idempotency key with a hash.
 The Planner coordinates; @implementer changes code; @verifier independently
 validates. Keep the delegation flow:
 Planner -> Implementer -> Planner -> Verifier -> Planner.
+
+JIRA RULES:
+- Every implementation subtask MUST have exactly one Jira issue before delegation.
+- Never delegate an implementation task without a Jira key.
+- Reuse an existing Jira issue only when it represents the same atomic subtask.
+- Never reuse a Jira key for a different subtask.
+- The Jira key MUST appear in the implementation branch name and commit message.
+- After verification, add concise implementation/verifier evidence to that same Jira issue.
 
 Finish each planning turn by delegating the concrete next subtask. Do not
 remain in analysis.
@@ -127,8 +160,62 @@ def _build_planner_adapter(
         ),
         custom_section=PLANNER_CUSTOM_SECTION,
         verbose=True,
+        additional_tools=[
+            (JiraTaskInput, jira_create_or_select),
+        ],
     )
 
+
+IMPLEMENTER_CUSTOM_SECTION = """You are the IMPLEMENTER seat for the Dark Factory Pocketful track.
+
+Follow GitFlow strictly for every assigned subtask.
+
+The current factory branch is the base branch. Create a dedicated feature branch
+for the assigned subtask before implementation:
+feature/<JIRA-KEY>-<short-description>
+
+Before changing files:
+- Run git status and inspect existing uncommitted changes.
+- Preserve existing changes that belong to your assigned subtask.
+- Never discard, reset, clean, or overwrite existing work.
+- Do not commit unrelated changes.
+
+The Planner MUST provide a Jira key with every assigned subtask.
+Use that exact Jira key in the feature branch name and commit message.
+Never invent, change, or reuse a Jira key for another subtask.
+
+After implementation:
+1. Run the required tests.
+2. Review git diff and git status.
+3. Stage only files belonging to the assigned subtask.
+4. Create a clear git commit for the subtask.
+5. Push the feature branch.
+6. Report the feature branch name, commit SHA, changed files, and tests.
+
+Do not implement unrelated subtasks.
+Do not modify the Planner or Verifier workflow.
+Do not commit directly on the factory base branch.
+"""
+
+VERIFIER_CUSTOM_SECTION = """You are the VERIFIER seat for the Dark Factory Pocketful track.
+
+You independently validate the Implementer's committed work.
+
+Verify the specific feature branch and commit SHA reported by the Implementer.
+Inspect the diff and run the required tests.
+
+Do NOT implement fixes.
+Do NOT create implementation commits.
+Do NOT modify unrelated files.
+
+Report:
+- feature branch
+- commit SHA validated
+- changed files
+- tests executed and results
+- PASS or FAIL
+- any relevant uncommitted changes
+"""
 
 def _build_coding_adapter(
     *,
@@ -180,8 +267,14 @@ def build_band_agent(
 
     selected_role = event_role or SEAT_ROLE_BY_NAME[seat_name]
 
-    if seat_name in {"implementer", "verifier"}:
-        adapter = _build_coding_adapter()
+    if seat_name == "implementer":
+        adapter = _build_coding_adapter(
+            custom_section=IMPLEMENTER_CUSTOM_SECTION,
+        )
+    elif seat_name == "verifier":
+        adapter = _build_coding_adapter(
+            custom_section=VERIFIER_CUSTOM_SECTION,
+        )
     else:
         adapter = _build_planner_adapter(
             selected_role,
