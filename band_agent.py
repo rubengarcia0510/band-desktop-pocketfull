@@ -64,20 +64,8 @@ def _require_seat_env(seat_name: str) -> dict[str, str]:
 def _build_planner_adapter(
     selected_role: str,
     model_name: str,
-) -> CrewAIAdapter:
-    ensure_agents()
-
-    return CrewAIAdapter(
-        model=model_name,
-        role=selected_role,
-        goal=f"Actuar como {selected_role} del sistema.",
-        backstory=(
-            f"Sos el seat {selected_role}. Tu misión es colaborar de forma "
-            "coherente dentro del flujo de la factory, manteniendo evidencia y "
-            "verificación independiente."
-        ),
-        verbose=True,
-    )
+) -> OpencodeAdapter:
+    return _build_coding_adapter()
 
 
 def _build_coding_adapter() -> OpencodeAdapter:
@@ -127,64 +115,9 @@ def build_band_agent(
     if seat_name in {"implementer", "verifier"}:
         adapter = _build_coding_adapter()
     else:
-        model_name = llm_config["FEATHERLESS_MODEL"]
-
-        if not model_name.startswith("openai/"):
-            model_name = f"openai/{model_name}"
-
-        # CrewAIAdapter creates LLM(model=...) internally and CrewAI 1.15.5
-        # does not inherit Featherless credentials from OPENAI_* environment vars.
-        # Patch the CrewAI module locally so the adapter receives them explicitly.
-        import crewai
-        original_llm = crewai.LLM
-
-        def featherless_llm(*, model: str, **kwargs):
-            return original_llm(
-                model=model,
-                api_key=llm_config["FEATHERLESS_API_KEY"],
-                base_url=llm_config["FEATHERLESS_BASE_URL"],
-                **kwargs,
-            )
-
-        crewai.LLM = featherless_llm
-
-        adapter = CrewAIAdapter(
-            model=model_name,
-            role=selected_role,
-            goal=(
-                "Planificar exclusivamente el track Pocketful del Dark Factory. "
-                "El producto es una wallet tipo Venmo: usuarios, saldos en "
-                "unidades menores enteras, transferencias entre usuarios, "
-                "requests, splits, actividad, settlements, autenticación, "
-                "idempotencia y concurrencia segura. La especificación oficial "
-                "está en band-ai/dark-factory-wearedevs, pocketful/spec/stage-1.md. "
-                "NO inventes otro dominio, entidad o UI. NO uses ejemplos genéricos "
-                "como stage, scenario, element o StageView. "
-                "Planificar el trabajo y COMUNICARLO SIEMPRE mediante las "
-                "herramientas BAND. Cada vez que recibas un mensaje activado, "
-                "debes realizar al menos una llamada a una herramienta BAND. "
-                "Para delegar trabajo, usa band_send_message mencionando "
-                "@implementer. Nunca respondas solamente con texto."
-            ),
-            backstory=(
-                "Sos el Planner de una software factory coordinada por BAND. "
-                "Tu salida textual fuera de una herramienta no llega al Room. "
-                "Por eso, ante cada mensaje, primero debes usar las herramientas "
-                "BAND y enviar el resultado con band_send_message. "
-                "Debes coordinar al Implementer y luego al Verifier mediante "
-                "mensajes explícitos con sus menciones."
-            ),
-            custom_section=(
-                "REGLA CRITICA DE BAND: nunca finalices un turno sin llamar "
-                "a una herramienta BAND. Para comunicar cualquier respuesta "
-                "al Room usa exclusivamente band_send_message. "
-                "Cuando corresponda delegar, menciona explícitamente "
-                "@implementer o @verifier en el mensaje. "
-                "No escribas una respuesta final esperando que BAND la entregue: "
-                "debes invocar la herramienta."
-            ),
-            verbose=True,
-            max_iter=20,
+        adapter = _build_planner_adapter(
+            selected_role,
+            llm_config["FEATHERLESS_MODEL"],
         )
 
     return Agent.create(
