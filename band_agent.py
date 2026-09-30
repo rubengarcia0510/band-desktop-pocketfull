@@ -14,9 +14,9 @@ import sys
 from dotenv import load_dotenv
 
 from band import Agent
-from band.adapters import CrewAIAdapter, OpencodeAdapter, OpencodeAdapterConfig
+from band.adapters import OpencodeAdapter, OpencodeAdapterConfig
 
-from crew_setup import ensure_agents, require_env_vars
+from crew_setup import require_env_vars
 
 
 SEAT_ROLE_BY_NAME = {
@@ -61,14 +61,79 @@ def _require_seat_env(seat_name: str) -> dict[str, str]:
     }
 
 
+PLANNER_CUSTOM_SECTION = """You are the Planner seat for the Dark Factory Pocketful track.
+
+Your mission is to produce an actionable plan for the COMPLETE Pocketful Stage 1
+and immediately delegate implementation work.
+
+AUTHORITATIVE SOURCE:
+.dark-factory-spec/pocketful/spec/stage-1.md
+
+You MUST inspect the spec and current pocketful/ code before planning.
+
+SCOPE IS FIXED:
+Implement ALL of Stage 1. Never reduce it to a subset and never ask the user
+to choose the scope.
+
+The plan MUST cover every Stage 1 area required by the spec, including:
+- health and deterministic reset/seed;
+- signup, login, bearer auth and /me;
+- payments and activity;
+- payment requests and paying requests;
+- splits;
+- settlements;
+- all required idempotency-key paths and semantics;
+- concurrency, atomicity and money invariants;
+- test export/import;
+- Dockerfile, RUN.md and harness requirements.
+
+Use only endpoint names, fields, status codes, error codes, validation rules,
+shapes and semantics actually defined by the spec. Do not invent APIs.
+
+IMPORTANT EXECUTION RULE:
+Do not spend the turn performing an exhaustive audit or repeatedly rereading
+the repository. Read enough to establish the current state, then produce the
+plan and delegate.
+
+The plan should be concise and executable:
+1. Identify what is already correct.
+2. Identify the remaining Stage 1 work.
+3. Group the work into ordered implementation subtasks with real file paths.
+4. Give each subtask concrete acceptance tests.
+5. Delegate the implementation work to @implementer.
+6. Ask @verifier to validate the resulting work against the official spec/tests.
+
+Do NOT implement code yourself.
+Do NOT wait for user confirmation.
+Do NOT create a multi-stage roadmap beyond Stage 1.
+Do NOT defer requests, splits, settlements or export/import to a later stage.
+
+For SQLite concurrency use BEGIN IMMEDIATE, never SELECT ... FOR UPDATE.
+
+For idempotency, preserve the exact key for lookup scoped by authenticated
+user and store a request-body hash to detect reuse with a different request.
+Do not replace the idempotency key with a hash.
+
+Finish the planning turn by delegating concrete work. Do not remain in analysis.
+"""
+
+
+
 def _build_planner_adapter(
     selected_role: str,
     model_name: str,
 ) -> OpencodeAdapter:
-    return _build_coding_adapter()
+    return _build_coding_adapter(
+        custom_section=PLANNER_CUSTOM_SECTION,
+        include_base_instructions=True,
+    )
 
 
-def _build_coding_adapter() -> OpencodeAdapter:
+def _build_coding_adapter(
+    *,
+    custom_section: str = "",
+    include_base_instructions: bool = False,
+) -> OpencodeAdapter:
     repository_directory = os.path.dirname(os.path.abspath(__file__))
 
     config = OpencodeAdapterConfig(
@@ -82,6 +147,8 @@ def _build_coding_adapter() -> OpencodeAdapter:
             "OPENCODE_MODEL",
             "MiniMaxAI/MiniMax-M2.5",
         ),
+        custom_section=custom_section,
+        include_base_instructions=include_base_instructions,
         approval_mode="auto_accept",
         turn_timeout_s=float(
             os.getenv(
