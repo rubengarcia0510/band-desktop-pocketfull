@@ -47,6 +47,7 @@ def build_llm(env: Mapping[str, str] | None = None) -> LLM:
             model=model_name,
             base_url=values["FEATHERLESS_BASE_URL"],
             api_key=values["FEATHERLESS_API_KEY"],
+            additional_params={"enable_thinking": False},
         )
     except Exception as exc:
         raise RuntimeError(
