@@ -211,11 +211,7 @@ def build_band_agent(
 
 async def _run_seat(seat_name: str) -> None:
     agent = build_band_agent(seat_name)
-    await agent.start()
-    try:
-        await agent.run_forever()
-    finally:
-        await agent.stop()
+    await agent.run()
 
 
 if __name__ == "__main__":
