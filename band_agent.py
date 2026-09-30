@@ -14,7 +14,7 @@ import sys
 from dotenv import load_dotenv
 
 from band import Agent
-from band.adapters import OpencodeAdapter, OpencodeAdapterConfig
+from band.adapters import CrewAIAdapter, OpencodeAdapter, OpencodeAdapterConfig
 
 from crew_setup import require_env_vars
 
@@ -122,10 +122,25 @@ Finish the planning turn by delegating concrete work. Do not remain in analysis.
 def _build_planner_adapter(
     selected_role: str,
     model_name: str,
-) -> OpencodeAdapter:
-    return _build_coding_adapter(
+) -> CrewAIAdapter:
+    if not model_name.startswith("openai/"):
+        model_name = f"openai/{model_name}"
+
+    return CrewAIAdapter(
+        model=model_name,
+        role=selected_role,
+        goal=(
+            f"Actuar como {selected_role} del sistema y coordinar el trabajo "
+            "mediante los participantes de BAND."
+        ),
+        backstory=(
+            f"Sos el seat {selected_role}. Tu misión es colaborar de forma "
+            "coherente dentro del flujo de la factory, manteniendo evidencia, "
+            "delegando el trabajo concreto a los agentes correspondientes y "
+            "usando las herramientas de BAND para comunicarte con ellos."
+        ),
         custom_section=PLANNER_CUSTOM_SECTION,
-        include_base_instructions=True,
+        verbose=True,
     )
 
 
@@ -196,8 +211,11 @@ def build_band_agent(
 
 async def _run_seat(seat_name: str) -> None:
     agent = build_band_agent(seat_name)
-
-    await agent.run()
+    await agent.start()
+    try:
+        await agent.run_forever()
+    finally:
+        await agent.stop()
 
 
 if __name__ == "__main__":
