@@ -43,19 +43,27 @@ class JiraClient:
             ) from exc
 
     def search_by_summary(self, summary):
+        escaped = summary.replace("\\", "\\\\").replace('"', '\\"')
         jql = (
             f'project = "{self.project_key}" '
-            f'AND summary ~ "\\"{summary}\\"" '
+            f'AND summary = "{escaped}" '
             "ORDER BY created DESC"
         )
 
         result = self._request(
             "GET",
             f"/rest/api/3/search/jql?jql={quote(jql)}"
-            "&fields=summary,status,issuetype",
+            "&fields=summary,status,issuetype,description,comment",
         )
 
         return result.get("issues", [])
+
+    def get_issue(self, issue_key):
+        return self._request(
+            "GET",
+            f"/rest/api/3/issue/{quote(issue_key)}"
+            "?fields=summary,status,issuetype,description,comment",
+        )
 
     def create_task(self, summary, description):
         payload = {

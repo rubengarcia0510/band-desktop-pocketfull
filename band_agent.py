@@ -1,6 +1,6 @@
 """Runner for the three Band seats used by the dark factory.
 
-Planner uses OpenCode for lightweight planning and delegation.
+Planner uses CrewAI for coordination and delegation.
 Implementer and Verifier use OpenCode for repository work and verification.
 """
 
@@ -67,6 +67,15 @@ class JiraTaskInput(BaseModel):
     description: str = Field(description="Concrete implementation task description.")
 
 
+class JiraIssueInput(BaseModel):
+    issue_key: str = Field(description="Jira issue key, for example PDF-21.")
+
+
+class JiraEvidenceInput(BaseModel):
+    issue_key: str = Field(description="Jira issue key, for example PDF-21.")
+    evidence: str = Field(description="Concise implementation or verification evidence.")
+
+
 def jira_create_or_select(task: JiraTaskInput) -> str:
     """Find an existing Jira task with this summary or create it if absent."""
     client = JiraClient()
@@ -82,6 +91,26 @@ def jira_create_or_select(task: JiraTaskInput) -> str:
     return created["key"]
 
 
+def jira_get_issue(issue: JiraIssueInput) -> str:
+    """Read the current Jira state for an existing issue."""
+    issue = JiraClient().get_issue(issue.issue_key)
+
+    fields = issue.get("fields", {})
+    status = (fields.get("status") or {}).get("name", "UNKNOWN")
+    summary = fields.get("summary", "")
+
+    return f"{issue['key']}: status={status}; summary={summary}"
+
+
+def jira_add_evidence(evidence: JiraEvidenceInput) -> str:
+    """Record implementation or verification evidence on the Jira issue."""
+    JiraClient().add_comment(
+        evidence.issue_key,
+        evidence.evidence,
+    )
+    return evidence.issue_key
+
+
 PLANNER_CUSTOM_SECTION = """You are the Planner seat for the Dark Factory Pocketful track.
 
 AUTHORITATIVE SOURCE:
@@ -95,15 +124,27 @@ audit and do not repeatedly reread the repository.
 
 For each planning turn:
 1. Identify the single next unfinished block.
-2. Define ONE concrete implementation subtask for @implementer.
-3. Create or select the corresponding Jira task using the Jira tool BEFORE delegation.
-4. Include the Jira key in the delegation and require it in the implementation branch and commit.
-5. Include the relevant real file paths and exact spec requirements.
-6. Define concise acceptance tests/evidence for that subtask.
-7. Delegate only that subtask to @implementer.
-8. After implementation evidence is available, ask @verifier to validate it.
-9. Record the verifier evidence on the same Jira task.
-10. Use the verifier result to choose the next atomic subtask.
+2. Check Jira for the current state of any existing issue representing that exact subtask.
+3. Treat explicit Implementer/Verifier evidence and Jira state as authoritative over stale room messages.
+4. If the exact subtask already has a Jira issue, reuse that issue; never create a duplicate.
+5. Define ONE concrete implementation subtask for @implementer.
+6. Include the Jira key in the delegation and require it in the implementation branch and commit.
+7. Include the relevant real file paths and exact spec requirements.
+8. Define concise acceptance tests/evidence for that subtask.
+9. Delegate only that subtask to @implementer.
+10. After implementation evidence is available, ask @verifier to validate it.
+11. Record the implementation and verifier evidence on the same Jira task.
+12. Use the verifier result to choose the next atomic subtask.
+
+STATE RULES:
+- A room message alone is never sufficient evidence that a task is DONE.
+- A task is DONE only when there is explicit implementation evidence plus verifier PASS,
+  or an equivalent authoritative Jira evidence record.
+- Do not create a new Jira issue merely because the room history contains no current
+  message for a previously completed task.
+- Before creating a Jira issue, use the Jira tool to check whether the exact subtask
+  already exists.
+- Never create a Jira issue for work that is already verified as complete.
 
 Do NOT implement code yourself.
 Do NOT delegate multiple independent implementation tasks in one message.
@@ -162,6 +203,8 @@ def _build_planner_adapter(
         verbose=True,
         additional_tools=[
             (JiraTaskInput, jira_create_or_select),
+            (JiraIssueInput, jira_get_issue),
+            (JiraEvidenceInput, jira_add_evidence),
         ],
     )
 
