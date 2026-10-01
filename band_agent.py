@@ -432,11 +432,8 @@ def _build_coding_adapter(
     if custom_section == IMPLEMENTER_CUSTOM_SECTION:
         additional_tools = [
             (GitFlowFeatureStartInput, gitflow_feature_start),
-            (GitFlowFeatureFinishInput, gitflow_feature_finish),
             (GitFlowReleaseStartInput, gitflow_release_start),
-            (GitFlowReleaseFinishInput, gitflow_release_finish),
             (GitFlowHotfixStartInput, gitflow_hotfix_start),
-            (GitFlowHotfixFinishInput, gitflow_hotfix_finish),
         ]
 
     return OpencodeAdapter(
