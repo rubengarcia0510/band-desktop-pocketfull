@@ -94,14 +94,36 @@ def jira_create_or_select(task: JiraTaskInput) -> str:
 
 
 def jira_get_issue(issue: JiraIssueInput) -> str:
-    """Read the current Jira state for an existing issue."""
+    """Read Jira state and authoritative implementation/verifier evidence."""
     issue = JiraClient().get_issue(issue.issue_key)
 
     fields = issue.get("fields", {})
     status = (fields.get("status") or {}).get("name", "UNKNOWN")
     summary = fields.get("summary", "")
 
-    return f"{issue['key']}: status={status}; summary={summary}"
+    comments = fields.get("comment", {}).get("comments", [])
+    evidence = []
+
+    for comment in comments:
+        body = comment.get("body", {})
+        paragraphs = []
+
+        for block in body.get("content", []):
+            for item in block.get("content", []):
+                text_value = item.get("text")
+                if text_value:
+                    paragraphs.append(text_value)
+
+        text_value = " ".join(paragraphs).strip()
+        if text_value:
+            evidence.append(text_value)
+
+    result = f"{issue['key']}: status={status}; summary={summary}"
+
+    if evidence:
+        result += "; evidence=" + " || ".join(evidence)
+
+    return result
 
 
 def jira_add_evidence(evidence: JiraEvidenceInput) -> str:
