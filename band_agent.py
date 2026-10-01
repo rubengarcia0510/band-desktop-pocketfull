@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import subprocess
 import sys
 
 from dotenv import load_dotenv
@@ -109,6 +111,143 @@ def jira_add_evidence(evidence: JiraEvidenceInput) -> str:
         evidence.evidence,
     )
     return evidence.issue_key
+
+
+class GitFlowFeatureStartInput(BaseModel):
+    """Input for starting a GitFlow feature branch from a Jira task."""
+    jira_key: str = Field(
+        description="Jira issue key, for example PDF-21."
+    )
+    short_description: str = Field(
+        description="Short branch description, for example gitflow-implementer."
+    )
+
+
+class GitFlowFeatureFinishInput(BaseModel):
+    """Input for finishing a GitFlow feature branch."""
+    branch_name: str = Field(
+        description="Feature name without the feature/ prefix, for example PDF-21-gitflow-implementer."
+    )
+
+
+class GitFlowReleaseStartInput(BaseModel):
+    """Input for starting a GitFlow release branch."""
+    branch_name: str = Field(
+        description="Release name without the release/ prefix."
+    )
+
+
+class GitFlowReleaseFinishInput(BaseModel):
+    """Input for finishing a GitFlow release branch."""
+    branch_name: str = Field(
+        description="Release name without the release/ prefix."
+    )
+
+
+class GitFlowHotfixStartInput(BaseModel):
+    """Input for starting a GitFlow hotfix branch."""
+    branch_name: str = Field(
+        description="Hotfix name without the hotfix/ prefix."
+    )
+
+
+class GitFlowHotfixFinishInput(BaseModel):
+    """Input for finishing a GitFlow hotfix branch."""
+    branch_name: str = Field(
+        description="Hotfix name without the hotfix/ prefix."
+    )
+
+
+def _run_git_flow(operation: str, branch_name: str) -> str:
+    """Run one validated GitFlow operation in the factory repository."""
+    if not re.fullmatch(r"[A-Za-z0-9._/-]+", branch_name):
+        raise ValueError("Invalid GitFlow branch name")
+
+    if (
+        branch_name.startswith("/")
+        or branch_name.endswith("/")
+        or ".." in branch_name
+    ):
+        raise ValueError("Invalid GitFlow branch name")
+
+    repository_directory = os.path.dirname(os.path.abspath(__file__))
+
+    commands = {
+        "feature_start": ["git", "flow", "feature", "start", branch_name],
+        "feature_finish": ["git", "flow", "feature", "finish", branch_name],
+        "release_start": ["git", "flow", "release", "start", branch_name],
+        "release_finish": ["git", "flow", "release", "finish", branch_name],
+        "hotfix_start": ["git", "flow", "hotfix", "start", branch_name],
+        "hotfix_finish": ["git", "flow", "hotfix", "finish", branch_name],
+    }
+
+    command = commands.get(operation)
+    if command is None:
+        raise ValueError(f"Unsupported GitFlow operation: {operation}")
+
+    env = os.environ.copy()
+    env["GIT_MERGE_AUTOEDIT"] = "no"
+
+    result = subprocess.run(
+        command,
+        cwd=repository_directory,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    output = "\n".join(
+        part.strip()
+        for part in (result.stdout, result.stderr)
+        if part and part.strip()
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git flow {operation} failed "
+            f"(exit {result.returncode}): {output}"
+        )
+
+    return output or f"git flow {operation} completed: {branch_name}"
+
+
+def gitflow_feature_start(branch: GitFlowFeatureStartInput) -> str:
+    """Start a GitFlow feature branch derived from the Jira key."""
+    if not re.fullmatch(r"[A-Z][A-Z0-9]+-[0-9]+", branch.jira_key):
+        raise ValueError("Invalid Jira issue key")
+
+    slug = re.sub(r"[^a-z0-9]+", "-", branch.short_description.lower()).strip("-")
+    if not slug:
+        raise ValueError("Short description must contain alphanumeric characters")
+
+    branch_name = f"{branch.jira_key}-{slug}"
+    return _run_git_flow("feature_start", branch_name)
+
+
+def gitflow_feature_finish(branch: GitFlowFeatureFinishInput) -> str:
+    """Finish a GitFlow feature branch and merge it back into develop."""
+    return _run_git_flow("feature_finish", branch.branch_name)
+
+
+def gitflow_release_start(branch: GitFlowReleaseStartInput) -> str:
+    """Start a GitFlow release branch from develop."""
+    return _run_git_flow("release_start", branch.branch_name)
+
+
+def gitflow_release_finish(branch: GitFlowReleaseFinishInput) -> str:
+    """Finish a GitFlow release branch and merge it into main and develop."""
+    return _run_git_flow("release_finish", branch.branch_name)
+
+
+def gitflow_hotfix_start(branch: GitFlowHotfixStartInput) -> str:
+    """Start a GitFlow hotfix branch from main."""
+    return _run_git_flow("hotfix_start", branch.branch_name)
+
+
+def gitflow_hotfix_finish(branch: GitFlowHotfixFinishInput) -> str:
+    """Finish a GitFlow hotfix branch and merge it into main and develop."""
+    return _run_git_flow("hotfix_finish", branch.branch_name)
 
 
 PLANNER_CUSTOM_SECTION = """You are the Planner seat for the Dark Factory Pocketful track.
@@ -289,7 +428,18 @@ def _build_coding_adapter(
         ),
     )
 
-    return OpencodeAdapter(config=config)
+    additional_tools = []
+    if custom_section == IMPLEMENTER_CUSTOM_SECTION:
+        additional_tools = [
+            (GitFlowFeatureStartInput, gitflow_feature_start),
+            (GitFlowReleaseStartInput, gitflow_release_start),
+            (GitFlowHotfixStartInput, gitflow_hotfix_start),
+        ]
+
+    return OpencodeAdapter(
+        config=config,
+        additional_tools=additional_tools,
+    )
 
 
 def build_band_agent(
