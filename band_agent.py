@@ -114,9 +114,12 @@ def jira_add_evidence(evidence: JiraEvidenceInput) -> str:
 
 
 class GitFlowFeatureStartInput(BaseModel):
-    """Input for starting a GitFlow feature branch."""
-    branch_name: str = Field(
-        description="Feature name without the feature/ prefix, for example PDF-21-gitflow-implementer."
+    """Input for starting a GitFlow feature branch from a Jira task."""
+    jira_key: str = Field(
+        description="Jira issue key, for example PDF-21."
+    )
+    short_description: str = Field(
+        description="Short branch description, for example gitflow-implementer."
     )
 
 
@@ -210,8 +213,16 @@ def _run_git_flow(operation: str, branch_name: str) -> str:
 
 
 def gitflow_feature_start(branch: GitFlowFeatureStartInput) -> str:
-    """Start a GitFlow feature branch from the current integration branch."""
-    return _run_git_flow("feature_start", branch.branch_name)
+    """Start a GitFlow feature branch derived from the Jira key."""
+    if not re.fullmatch(r"[A-Z][A-Z0-9]+-[0-9]+", branch.jira_key):
+        raise ValueError("Invalid Jira issue key")
+
+    slug = re.sub(r"[^a-z0-9]+", "-", branch.short_description.lower()).strip("-")
+    if not slug:
+        raise ValueError("Short description must contain alphanumeric characters")
+
+    branch_name = f"{branch.jira_key}-{slug}"
+    return _run_git_flow("feature_start", branch_name)
 
 
 def gitflow_feature_finish(branch: GitFlowFeatureFinishInput) -> str:
