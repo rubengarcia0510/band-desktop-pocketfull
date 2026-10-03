@@ -225,4 +225,128 @@ def list_requests(
     }
 
 
-__all__ = ["create_request", "list_requests"]
+ENDPOINT_PAY = "POST /requests/{id}/pay"
+
+
+def _hash_body(body: dict) -> str:
+    normalized = json.dumps(body, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def pay_request(
+    user_id: str,
+    request_id: str,
+    idempotency_key: str,
+    visibility: str = "public",
+) -> tuple[dict, int]:
+    conn = db_mod.get_connection()
+    body = {"visibility": visibility}
+    body_hash = _hash_body(body)
+
+    existing = conn.execute(
+        "SELECT response_status, response_body FROM idempotency_keys "
+        "WHERE user_id = ? AND endpoint = ? AND key = ?",
+        (user_id, ENDPOINT_PAY, idempotency_key),
+    ).fetchone()
+
+    if existing is not None:
+        stored_hash = conn.execute(
+            "SELECT request_body_hash FROM idempotency_keys "
+            "WHERE user_id = ? AND endpoint = ? AND key = ?",
+            (user_id, ENDPOINT_PAY, idempotency_key),
+        ).fetchone()["request_body_hash"]
+        if stored_hash != body_hash:
+            raise_error(409, "idempotency_key_reuse", "same key, different request body")
+        return json.loads(existing["response_body"]), 200
+
+    request_row = conn.execute(
+        "SELECT * FROM payment_requests WHERE id = ?", (request_id,)
+    ).fetchone()
+    if request_row is None:
+        raise_error(404, "not_found", "request not found")
+
+    if request_row["payer_id"] != user_id:
+        raise_error(403, "forbidden", "only the payer can pay the request")
+
+    if request_row["status"] != "pending":
+        raise_error(409, "request_not_pending", "request is not pending")
+
+    payer = conn.execute(
+        "SELECT id, handle, balance, currency FROM users WHERE id = ?", (user_id,)
+    ).fetchone()
+    if payer is None:
+        raise_error(401, "unauthenticated", "payer user not found")
+
+    requester = conn.execute(
+        "SELECT id, handle, currency FROM users WHERE id = ?", (request_row["requester_id"],)
+    ).fetchone()
+
+    amount = request_row["amount"]
+    if payer["balance"] < amount:
+        raise_error(409, "insufficient_funds", "not enough balance")
+
+    if not isinstance(visibility, str) or visibility not in ("public", "private"):
+        raise_error(422, "validation_failed", "visibility must be 'public' or 'private'")
+
+    payment_id = f"p_{secrets.token_hex(8)}"
+    created_at = _utc_now_iso()
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "UPDATE users SET balance = balance - ? WHERE id = ?",
+            (amount, user_id),
+        )
+        conn.execute(
+            "UPDATE users SET balance = balance + ? WHERE id = ?",
+            (amount, request_row["requester_id"]),
+        )
+        conn.execute(
+            "INSERT INTO payments(id, from_user_id, to_user_id, amount, note, visibility, request_id, settlement_id, created_at) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (payment_id, user_id, request_row["requester_id"], amount, request_row["note"], visibility, request_id, None, created_at),
+        )
+        conn.execute(
+            "UPDATE payment_requests SET status = 'paid', payment_id = ? WHERE id = ?",
+            (payment_id, request_id),
+        )
+        conn.execute(
+            "INSERT INTO idempotency_keys(user_id, endpoint, key, request_body_hash, response_status, response_body, created_at) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?)",
+            (user_id, ENDPOINT_PAY, idempotency_key, body_hash, 201, "", created_at),
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+    payment_row = conn.execute(
+        "SELECT * FROM payments WHERE id = ?", (payment_id,)
+    ).fetchone()
+    response = {
+        "payment_id": payment_row["id"],
+        "from_user_id": payment_row["from_user_id"],
+        "from_handle": payer["handle"],
+        "to_user_id": payment_row["to_user_id"],
+        "to_handle": requester["handle"],
+        "amount": payment_row["amount"],
+        "currency": payer["currency"],
+        "note": payment_row["note"],
+        "visibility": payment_row["visibility"],
+        "request_id": request_id,
+        "created_at": payment_row["created_at"],
+    }
+    response_json = json.dumps(response)
+
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute(
+        "UPDATE idempotency_keys SET response_body = ?, response_status = ? "
+        "WHERE user_id = ? AND endpoint = ? AND key = ?",
+        (response_json, 201, user_id, ENDPOINT_PAY, idempotency_key),
+    )
+    conn.execute("COMMIT")
+
+    return response, 201
+
+
+__all__ = ["create_request", "list_requests", "pay_request"]

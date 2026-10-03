@@ -57,4 +57,27 @@ def list_requests(
     return JSONResponse(content=response)
 
 
+@router.post("/requests/{request_id}/pay")
+def pay_request(
+    request_id: str,
+    user_id: Annotated[str, Depends(current_user_id)],
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
+    payload: dict[str, Any] = Body(default_factory=dict),
+) -> JSONResponse:
+    if not idempotency_key:
+        raise_error(400, "missing_idempotency_key", "Idempotency-Key header is required")
+    if not isinstance(idempotency_key, str) or len(idempotency_key) > 255:
+        raise_error(422, "validation_failed", "Idempotency-Key must be 1-255 characters")
+
+    visibility = payload.get("visibility", "public") if isinstance(payload, dict) else "public"
+
+    response, status = request_service.pay_request(
+        user_id=user_id,
+        request_id=request_id,
+        idempotency_key=idempotency_key,
+        visibility=visibility,
+    )
+    return JSONResponse(content=response, status_code=status)
+
+
 __all__ = ["router"]
