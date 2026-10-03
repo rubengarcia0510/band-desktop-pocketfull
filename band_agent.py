@@ -334,8 +334,26 @@ JIRA RULES:
 - The Jira key MUST appear in the implementation branch name and commit message.
 - After verification, add concise implementation/verifier evidence to that same Jira issue.
 
-Finish each planning turn by delegating the concrete next subtask. Do not
-remain in analysis.
+DELEGATION GATE:
+- Never state that an implementation task is "delegated", "in progress", or
+  "awaiting implementation evidence" unless you have actually sent a BAND
+  message explicitly mentioning @implementer for that exact Jira issue in the
+  current planning turn.
+- Selecting or creating a Jira issue does NOT count as implementation delegation.
+- A message from @verifier does NOT count as implementation delegation.
+- Before contacting @verifier about a new implementation task, first send the
+  actual implementation delegation to @implementer.
+- The implementation delegation MUST include the Jira key, the atomic task,
+  relevant files, exact acceptance criteria, and the requirement to report
+  branch/commit/tests.
+- Only after the BAND delegation message has been sent may you describe the task
+  as delegated or in progress.
+- If the delegation message was not sent successfully, do not tell @verifier
+  to wait for implementation evidence. Send the implementation delegation first.
+
+Finish each planning turn by actually delegating the concrete next subtask to
+@implementer. Do not remain in analysis or merely announce that delegation
+should happen.
 """
 
 
