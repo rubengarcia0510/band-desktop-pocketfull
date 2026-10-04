@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from jira_client import JiraClient
 from band.adapters import CrewAIAdapter, OpencodeAdapter, OpencodeAdapterConfig
 
-from crew_setup import require_env_vars
+from crew_setup import ensure_agents, require_env_vars
 
 
 SEAT_ROLE_BY_NAME = {
@@ -78,8 +78,34 @@ class JiraEvidenceInput(BaseModel):
     evidence: str = Field(description="Concise implementation or verification evidence.")
 
 
+class JiraBacklogTaskInput(BaseModel):
+    task_id: str = Field(description="Stable task identifier inside the frozen sprint plan.")
+    summary: str = Field(description="Exact Jira task summary.")
+    description: str = Field(description="Concrete implementation scope and acceptance criteria.")
+    dependencies: list[str] = Field(default_factory=list)
+
+
+class JiraBacklogInput(BaseModel):
+    plan_id: str = Field(description="Stable identifier for the complete sprint plan.")
+    tasks: list[JiraBacklogTaskInput] = Field(
+        description="Complete sprint backlog. All normal implementation work must be present."
+    )
+
+
+class JiraBacklogQueryInput(BaseModel):
+    plan_id: str = Field(description="Stable identifier of the sprint plan to inspect.")
+
+
+class JiraTransitionInput(BaseModel):
+    issue_key: str = Field(description="Jira issue key to transition.")
+    transition_name: str = Field(
+        default="Finalizada",
+        description="Jira transition name, normally Finalizada after verifier PASS.",
+    )
+
+
 def jira_create_or_select(task: JiraTaskInput) -> str:
-    """Find an existing Jira task with this summary or create it if absent."""
+    """Legacy helper retained for compatibility; Planner no longer uses it."""
     client = JiraClient()
     matches = client.search_by_summary(task.summary)
 
@@ -115,6 +141,7 @@ def jira_get_issue(issue: JiraIssueInput) -> str:
                     paragraphs.append(text_value)
 
         text_value = " ".join(paragraphs).strip()
+
         if text_value:
             evidence.append(text_value)
 
@@ -133,6 +160,216 @@ def jira_add_evidence(evidence: JiraEvidenceInput) -> str:
         evidence.evidence,
     )
     return evidence.issue_key
+
+
+def _validate_backlog(tasks: list[JiraBacklogTaskInput]) -> None:
+    if not tasks:
+        raise ValueError("El backlog no puede estar vacío.")
+
+    task_ids = [task.task_id.strip() for task in tasks]
+
+    if any(not task_id for task_id in task_ids):
+        raise ValueError("Todos los task_id deben ser no vacíos.")
+
+    if len(task_ids) != len(set(task_ids)):
+        raise ValueError("Los task_id del backlog deben ser únicos.")
+
+    known = set(task_ids)
+
+    for task in tasks:
+        missing = set(task.dependencies) - known
+
+        if missing:
+            raise ValueError(
+                f"Dependencias inexistentes para {task.task_id}: "
+                f"{sorted(missing)}"
+            )
+
+    graph = {
+        task.task_id: list(task.dependencies)
+        for task in tasks
+    }
+
+    visiting = set()
+    visited = set()
+
+    def visit(node):
+        if node in visiting:
+            raise ValueError(
+                f"Ciclo de dependencias detectado en {node}."
+            )
+
+        if node in visited:
+            return
+
+        visiting.add(node)
+
+        for dependency in graph[node]:
+            visit(dependency)
+
+        visiting.remove(node)
+        visited.add(node)
+
+    for task_id in graph:
+        visit(task_id)
+
+
+def jira_create_and_freeze_backlog(backlog: JiraBacklogInput) -> str:
+    """Create the complete Jira sprint backlog and freeze it."""
+    _validate_backlog(backlog.tasks)
+
+    client = JiraClient()
+    existing = client.search_factory_plan(backlog.plan_id)
+
+    frozen = [
+        issue
+        for issue in existing
+        if "DARK_FACTORY_BACKLOG_FROZEN: YES"
+        in client._description_text(issue)
+    ]
+
+    if frozen:
+        return (
+            f"BACKLOG_ALREADY_FROZEN plan_id={backlog.plan_id}; "
+            f"issues={','.join(issue['key'] for issue in frozen)}"
+        )
+
+    existing_by_task = {}
+
+    for issue in existing:
+        description = client._description_text(issue)
+
+        match = re.search(
+            r"DARK_FACTORY_TASK_ID:\s*([^\n]+)",
+            description,
+        )
+
+        if match:
+            existing_by_task[match.group(1).strip()] = issue
+
+    issue_keys = []
+
+    for task in backlog.tasks:
+        task_id = task.task_id.strip()
+        dependencies = (
+            ",".join(dep.strip() for dep in task.dependencies)
+            or "NONE"
+        )
+
+        description = (
+            f"DARK_FACTORY_PLAN_ID: {backlog.plan_id}\n"
+            f"DARK_FACTORY_TASK_ID: {task_id}\n"
+            f"DARK_FACTORY_DEPENDENCIES: {dependencies}\n"
+            "DARK_FACTORY_BACKLOG_FROZEN: PENDING\n\n"
+            f"{task.description}"
+        )
+
+        existing_issue = existing_by_task.get(task_id)
+
+        if existing_issue:
+            issue_key = existing_issue["key"]
+        else:
+            created = client.create_task(
+                summary=task.summary,
+                description=description,
+                labels=["dark-factory-plan"],
+            )
+            issue_key = created["key"]
+
+        issue_keys.append(issue_key)
+
+    for issue_key in issue_keys:
+        client.add_comment(
+            issue_key,
+            (
+                "DARK_FACTORY_BACKLOG_FROZEN: YES\n"
+                f"DARK_FACTORY_PLAN_ID: {backlog.plan_id}\n"
+                "This issue belongs to the complete frozen sprint backlog. "
+                "Normal execution must not create replacement tasks."
+            ),
+        )
+
+    return (
+        f"BACKLOG_FROZEN plan_id={backlog.plan_id}; "
+        f"task_count={len(issue_keys)}; "
+        f"issues={','.join(issue_keys)}"
+    )
+
+
+def jira_get_frozen_backlog(query: JiraBacklogQueryInput) -> str:
+    """Read the authoritative frozen Jira backlog."""
+    client = JiraClient()
+    issues = client.search_factory_plan(query.plan_id)
+
+    frozen = []
+
+    for issue in issues:
+        description = client._description_text(issue)
+
+        if "DARK_FACTORY_BACKLOG_FROZEN: YES" not in description:
+            continue
+
+        task_match = re.search(
+            r"DARK_FACTORY_TASK_ID:\s*([^\n]+)",
+            description,
+        )
+
+        dependency_match = re.search(
+            r"DARK_FACTORY_DEPENDENCIES:\s*([^\n]+)",
+            description,
+        )
+
+        fields = issue.get("fields") or {}
+        status = (fields.get("status") or {}).get("name", "UNKNOWN")
+
+        frozen.append(
+            {
+                "jira_key": issue["key"],
+                "task_id": (
+                    task_match.group(1).strip()
+                    if task_match
+                    else issue["key"]
+                ),
+                "summary": fields.get("summary", ""),
+                "dependencies": (
+                    []
+                    if not dependency_match
+                    or dependency_match.group(1).strip() == "NONE"
+                    else [
+                        item.strip()
+                        for item in dependency_match.group(1).split(",")
+                        if item.strip()
+                    ]
+                ),
+                "status": status,
+            }
+        )
+
+    if not frozen:
+        return f"NO_FROZEN_BACKLOG plan_id={query.plan_id}"
+
+    return (
+        f"FROZEN_BACKLOG plan_id={query.plan_id}; "
+        f"tasks={frozen}"
+    )
+
+
+def jira_transition_issue(transition: JiraTransitionInput) -> str:
+    """Transition an existing Jira task after authoritative Planner verification."""
+    client = JiraClient()
+
+    if transition.transition_name.strip().lower() == "finalizada":
+        client.transition_to_finalizada(transition.issue_key)
+    else:
+        client.transition_issue(
+            transition.issue_key,
+            transition.transition_name,
+        )
+
+    return (
+        f"TRANSITIONED issue={transition.issue_key}; "
+        f"transition={transition.transition_name}"
+    )
 
 
 class GitFlowFeatureStartInput(BaseModel):
@@ -213,8 +450,11 @@ def _run_git_flow(operation: str, branch_name: str) -> str:
     }
 
     command = commands.get(operation)
+
     if command is None:
-        raise ValueError(f"Unsupported GitFlow operation: {operation}")
+        raise ValueError(
+            f"Unsupported GitFlow operation: {operation}"
+        )
 
     env = os.environ.copy()
     env["GIT_MERGE_AUTOEDIT"] = "no"
@@ -248,123 +488,230 @@ def gitflow_feature_start(branch: GitFlowFeatureStartInput) -> str:
     if not re.fullmatch(r"[A-Z][A-Z0-9]+-[0-9]+", branch.jira_key):
         raise ValueError("Invalid Jira issue key")
 
-    slug = re.sub(r"[^a-z0-9]+", "-", branch.short_description.lower()).strip("-")
+    slug = re.sub(
+        r"[^a-z0-9]+",
+        "-",
+        branch.short_description.lower(),
+    ).strip("-")
+
     if not slug:
-        raise ValueError("Short description must contain alphanumeric characters")
+        raise ValueError(
+            "Short description must contain alphanumeric characters"
+        )
 
     branch_name = f"{branch.jira_key}-{slug}"
-    return _run_git_flow("feature_start", branch_name)
+
+    return _run_git_flow(
+        "feature_start",
+        branch_name,
+    )
 
 
 def gitflow_feature_finish(branch: GitFlowFeatureFinishInput) -> str:
     """Finish a GitFlow feature branch and merge it back into develop."""
-    return _run_git_flow("feature_finish", branch.branch_name)
+    return _run_git_flow(
+        "feature_finish",
+        branch.branch_name,
+    )
 
 
 def gitflow_release_start(branch: GitFlowReleaseStartInput) -> str:
     """Start a GitFlow release branch from develop."""
-    return _run_git_flow("release_start", branch.branch_name)
+    return _run_git_flow(
+        "release_start",
+        branch.branch_name,
+    )
 
 
 def gitflow_release_finish(branch: GitFlowReleaseFinishInput) -> str:
     """Finish a GitFlow release branch and merge it into main and develop."""
-    return _run_git_flow("release_finish", branch.branch_name)
+    return _run_git_flow(
+        "release_finish",
+        branch.branch_name,
+    )
 
 
 def gitflow_hotfix_start(branch: GitFlowHotfixStartInput) -> str:
     """Start a GitFlow hotfix branch from main."""
-    return _run_git_flow("hotfix_start", branch.branch_name)
+    return _run_git_flow(
+        "hotfix_start",
+        branch.branch_name,
+    )
 
 
 def gitflow_hotfix_finish(branch: GitFlowHotfixFinishInput) -> str:
     """Finish a GitFlow hotfix branch and merge it into main and develop."""
-    return _run_git_flow("hotfix_finish", branch.branch_name)
+    return _run_git_flow(
+        "hotfix_finish",
+        branch.branch_name,
+    )
 
 
-PLANNER_CUSTOM_SECTION = """You are the Planner seat for the Dark Factory Pocketful track.
+PLANNER_CUSTOM_SECTION = """
+You are the PLANNER seat for the Dark Factory Pocketful track.
 
 AUTHORITATIVE SOURCE:
 .dark-factory-spec/pocketful/spec/stage-1.md
 
-Your job is to coordinate Stage 1 through SMALL, ATOMIC implementation tasks.
+You are the SINGLE ORCHESTRATOR of the factory.
 
-Before planning, read enough of the official spec and current pocketful/ code
-to identify the NEXT unfinished Stage 1 block. Do not perform an exhaustive
-audit and do not repeatedly reread the repository.
+The only valid execution communication flow is:
 
-For each planning turn:
-1. Identify the single next unfinished block.
-2. Check Jira for the current state of any existing issue representing that exact subtask.
-3. Treat explicit Implementer/Verifier evidence and Jira state as authoritative over stale room messages.
-4. If the exact subtask already has a Jira issue, reuse that issue; never create a duplicate.
-5. Define ONE concrete implementation subtask for @implementer.
-6. Include the Jira key in the delegation and require it in the implementation branch and commit.
-7. Include the relevant real file paths and exact spec requirements.
-8. Define concise acceptance tests/evidence for that subtask.
-9. Delegate only that subtask to @implementer.
-10. After implementation evidence is available, ask @verifier to validate it.
-11. Record the implementation and verifier evidence on the same Jira task.
-12. Use the verifier result to choose the next atomic subtask.
+Planner -> Implementer -> Planner -> Verifier -> Planner
 
-STATE RULES:
-- A room message alone is never sufficient evidence that a task is DONE.
-- A task is DONE only when there is explicit implementation evidence plus verifier PASS,
-  or an equivalent authoritative Jira evidence record.
-- Do not create a new Jira issue merely because the room history contains no current
-  message for a previously completed task.
-- Before creating a Jira issue, use the Jira tool to check whether the exact subtask
-  already exists.
-- Never create a Jira issue for work that is already verified as complete.
+Implementer and Verifier NEVER communicate directly.
+Implementer NEVER selects the next task.
+Verifier NEVER selects the next task.
+Only Planner decides what happens next.
+
+FACTORY LIFECYCLE:
+
+POST_ANALYSIS
+    ->
+SPRINT_PLANNING
+    ->
+BACKLOG_FROZEN
+    ->
+EXECUTION
+    ->
+VERIFICATION
+    ->
+SPRINT_COMPLETE
+
+CRITICAL PLANNING RULE:
+
+The factory MUST complete planning before normal implementation begins.
+
+Do NOT use the old incremental model:
+
+analysis -> create one task -> implement -> verify -> invent next task
+
+Instead:
+
+1. Read the complete authoritative specification.
+2. Inspect the current repository enough to understand the existing implementation.
+3. Identify ALL required capabilities for the current sprint/stage.
+4. Split the work into atomic implementation tasks.
+5. Define dependencies between those tasks.
+6. Define concrete acceptance criteria for every task.
+7. Create the COMPLETE Jira backlog in one planning operation.
+8. Freeze that backlog.
+9. Only after the backlog is frozen may execution begin.
+
+The frozen Jira backlog is the authoritative execution queue.
+
+Do NOT normally create Jira tasks during execution.
+Do NOT invent a replacement task because the current task failed.
+Do NOT create the next normal task after verification.
+
+During execution, select only an EXISTING, UNBLOCKED task from the frozen backlog.
+
+A new task may be created only as an explicit exceptional CHANGE TASK
+when implementation or verification discovers a genuine specification gap
+that was absent from the frozen plan.
+
+JIRA BACKLOG RULES:
+
+- Every normal implementation task MUST exist in Jira before execution.
+- Every normal task has exactly one Jira issue.
+- Every task has a stable task_id.
+- Dependencies must refer only to existing task_ids.
+- Dependencies must not contain cycles.
+- Once frozen, the backlog is authoritative.
+- Never silently replace a frozen task with another task.
+- Never duplicate an existing atomic task.
+- Never use one Jira key for two different atomic tasks.
+
+EXECUTION RULE:
+
+For each existing frozen task:
+
+1. Planner reads the frozen backlog.
+2. Planner selects the next UNBLOCKED existing task.
+3. Planner delegates that exact Jira task to @implementer.
+4. Implementer changes code on its dedicated feature branch.
+5. Implementer reports branch, commit and tests back to Planner.
+6. Planner records concise implementation evidence on the SAME Jira issue.
+7. Planner delegates verification of that SAME Jira task to @verifier.
+8. Verifier independently validates the branch/commit and reports PASS or FAIL to Planner.
+9. Planner records verifier evidence on the SAME Jira issue.
+
+If verifier PASS:
+
+10. Planner transitions the SAME Jira issue to Finalizada.
+11. Planner selects the next existing unblocked frozen task.
+
+If verifier FAIL:
+
+10. Planner records the failure on the SAME Jira issue.
+11. Planner sends the SAME task back to @implementer with the failure evidence.
+12. Do NOT create a replacement Jira task.
+13. Do NOT ask Verifier to communicate with Implementer.
+
+TASK COMPLETION RULE:
+
+A task is complete only when all of these are true:
+
+- Implementer evidence exists.
+- Planner recorded implementation evidence in Jira.
+- Verifier independently returned PASS.
+- Planner recorded verifier evidence in Jira.
+- The SAME Jira issue was transitioned to Finalizada.
+
+A room message alone is never sufficient evidence.
+
+DELEGATION GATE:
+
+Never state that a task is delegated or in progress unless the actual BAND
+delegation message to @implementer was successfully sent in the current
+planning turn.
+
+Creating or selecting a Jira issue is NOT delegation.
+
+A Verifier message is NOT implementation delegation.
+
+Before contacting @verifier for a new implementation task, the actual
+implementation delegation MUST already have been sent to @implementer.
+
+The implementation delegation MUST contain:
+
+- exact Jira key
+- exact atomic task
+- relevant real file paths
+- exact specification requirements
+- acceptance criteria
+- required branch name
+- requirement to report commit and tests
+
+Only Planner may perform these delegation decisions.
 
 Do NOT implement code yourself.
 Do NOT delegate multiple independent implementation tasks in one message.
 Do NOT ask the user for confirmation.
-Do NOT create a full Stage 1 roadmap in one turn.
-Do NOT skip required Stage 1 areas.
 
-Use only endpoint names, fields, status codes, error codes, validation rules,
-shapes and semantics actually defined by the official spec. Do not invent APIs.
+Do NOT invent APIs, fields, endpoints, status codes, or semantics that are
+not defined by the authoritative specification.
 
-For SQLite concurrency use BEGIN IMMEDIATE, never SELECT ... FOR UPDATE.
+SQLite concurrency:
+- use BEGIN IMMEDIATE
+- never use SELECT ... FOR UPDATE
 
-For idempotency, preserve the exact key for lookup scoped by authenticated
-user and store a request-body hash to detect reuse with a different request.
-Do not replace the idempotency key with a hash.
+Idempotency:
+- preserve the exact idempotency key
+- scope lookup by authenticated user and endpoint
+- store a canonical request-body hash
+- same key + same canonical body = replay
+- same key + different canonical body = conflict
+- never replace the idempotency key with its hash
 
-The Planner coordinates; @implementer changes code; @verifier independently
-validates. Keep the delegation flow:
-Planner -> Implementer -> Planner -> Verifier -> Planner.
+The Planner is responsible for orchestration and persistent state.
+Implementer changes code.
+Verifier independently validates.
+Planner decides the next state.
 
-JIRA RULES:
-- Every implementation subtask MUST have exactly one Jira issue before delegation.
-- Never delegate an implementation task without a Jira key.
-- Reuse an existing Jira issue only when it represents the same atomic subtask.
-- Never reuse a Jira key for a different subtask.
-- The Jira key MUST appear in the implementation branch name and commit message.
-- After verification, add concise implementation/verifier evidence to that same Jira issue.
-
-DELEGATION GATE:
-- Never state that an implementation task is "delegated", "in progress", or
-  "awaiting implementation evidence" unless you have actually sent a BAND
-  message explicitly mentioning @implementer for that exact Jira issue in the
-  current planning turn.
-- Selecting or creating a Jira issue does NOT count as implementation delegation.
-- A message from @verifier does NOT count as implementation delegation.
-- Before contacting @verifier about a new implementation task, first send the
-  actual implementation delegation to @implementer.
-- The implementation delegation MUST include the Jira key, the atomic task,
-  relevant files, exact acceptance criteria, and the requirement to report
-  branch/commit/tests.
-- Only after the BAND delegation message has been sent may you describe the task
-  as delegated or in progress.
-- If the delegation message was not sent successfully, do not tell @verifier
-  to wait for implementation evidence. Send the implementation delegation first.
-
-Finish each planning turn by actually delegating the concrete next subtask to
-@implementer. Do not remain in analysis or merely announce that delegation
-should happen.
+Never allow Implementer -> Verifier communication.
+Never allow Verifier -> Implementer communication.
 """
-
 
 
 def _build_planner_adapter(
@@ -390,32 +737,40 @@ def _build_planner_adapter(
         custom_section=PLANNER_CUSTOM_SECTION,
         verbose=True,
         additional_tools=[
-            (JiraTaskInput, jira_create_or_select),
+            (JiraBacklogInput, jira_create_and_freeze_backlog),
+            (JiraBacklogQueryInput, jira_get_frozen_backlog),
             (JiraIssueInput, jira_get_issue),
             (JiraEvidenceInput, jira_add_evidence),
+            (JiraTransitionInput, jira_transition_issue),
         ],
     )
 
 
-IMPLEMENTER_CUSTOM_SECTION = """You are the IMPLEMENTER seat for the Dark Factory Pocketful track.
+IMPLEMENTER_CUSTOM_SECTION = """
+You are the IMPLEMENTER seat for the Dark Factory Pocketful track.
 
 Follow GitFlow strictly for every assigned subtask.
 
 The current factory branch is the base branch. Create a dedicated feature branch
 for the assigned subtask before implementation:
+
 feature/<JIRA-KEY>-<short-description>
 
 Before changing files:
+
 - Run git status and inspect existing uncommitted changes.
 - Preserve existing changes that belong to your assigned subtask.
 - Never discard, reset, clean, or overwrite existing work.
 - Do not commit unrelated changes.
 
 The Planner MUST provide a Jira key with every assigned subtask.
+
 Use that exact Jira key in the feature branch name and commit message.
+
 Never invent, change, or reuse a Jira key for another subtask.
 
 After implementation:
+
 1. Run the required tests.
 2. Review git diff and git status.
 3. Stage only files belonging to the assigned subtask.
@@ -428,11 +783,14 @@ Do not modify the Planner or Verifier workflow.
 Do not commit directly on the factory base branch.
 """
 
-VERIFIER_CUSTOM_SECTION = """You are the VERIFIER seat for the Dark Factory Pocketful track.
+
+VERIFIER_CUSTOM_SECTION = """
+You are the VERIFIER seat for the Dark Factory Pocketful track.
 
 You independently validate the Implementer's committed work.
 
 Verify the specific feature branch and commit SHA reported by the Implementer.
+
 Inspect the diff and run the required tests.
 
 Do NOT implement fixes.
@@ -440,6 +798,7 @@ Do NOT create implementation commits.
 Do NOT modify unrelated files.
 
 Report:
+
 - feature branch
 - commit SHA validated
 - changed files
@@ -447,6 +806,7 @@ Report:
 - PASS or FAIL
 - any relevant uncommitted changes
 """
+
 
 def _build_coding_adapter(
     *,
@@ -487,6 +847,7 @@ def _build_coding_adapter(
     )
 
     additional_tools = []
+
     if custom_section == IMPLEMENTER_CUSTOM_SECTION:
         additional_tools = [
             (GitFlowFeatureStartInput, gitflow_feature_start),
@@ -555,6 +916,6 @@ if __name__ == "__main__":
         asyncio.run(_run_seat(seat))
     except KeyboardInterrupt:
         print(f"Seat {seat} detenida por el usuario.")
-    except Exception as exc:  # pragma: no cover - CLI entrypoint
+    except Exception as exc:
         print(f"Error al arrancar {seat}: {exc}")
         raise SystemExit(1)
