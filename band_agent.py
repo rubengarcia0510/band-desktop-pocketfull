@@ -279,6 +279,20 @@ def jira_create_and_freeze_backlog(backlog: JiraBacklogInput) -> str:
         issue_keys.append(issue_key)
 
     for issue_key in issue_keys:
+        issue = client.get_issue(issue_key)
+        description = client._description_text(issue)
+
+        if "DARK_FACTORY_BACKLOG_FROZEN: YES" not in description:
+            description = description.replace(
+                "DARK_FACTORY_BACKLOG_FROZEN: PENDING",
+                "DARK_FACTORY_BACKLOG_FROZEN: YES",
+            )
+
+            client.update_description(
+                issue_key,
+                description,
+            )
+
         client.add_comment(
             issue_key,
             (
