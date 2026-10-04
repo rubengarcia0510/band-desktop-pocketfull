@@ -192,7 +192,16 @@ def _run_git_flow(operation: str, branch_name: str) -> str:
     ):
         raise ValueError("Invalid GitFlow branch name")
 
-    repository_directory = os.path.dirname(os.path.abspath(__file__))
+    repository_directory = os.path.abspath(
+        os.getenv(
+            "PRODUCT_REPOSITORY_DIRECTORY",
+            os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "..",
+                "pocketful-product",
+            ),
+        )
+    )
 
     commands = {
         "feature_start": ["git", "flow", "feature", "start", branch_name],
@@ -444,7 +453,16 @@ def _build_coding_adapter(
     custom_section: str = "",
     include_base_instructions: bool = False,
 ) -> OpencodeAdapter:
-    repository_directory = os.path.dirname(os.path.abspath(__file__))
+    repository_directory = os.path.abspath(
+        os.getenv(
+            "PRODUCT_REPOSITORY_DIRECTORY",
+            os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "..",
+                "pocketful-product",
+            ),
+        )
+    )
 
     config = OpencodeAdapterConfig(
         base_url=os.getenv(
