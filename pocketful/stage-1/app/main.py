@@ -33,6 +33,12 @@ app.include_router(requests_router)
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    errs = exc.errors()
+    # spec §5: unparseable body or a field of the wrong JSON type -> 400 malformed_request.
+    # Required-field / rule violations stay 422 validation_failed.
+    for e in errs:
+        if e.get("type") in ("json_invalid", "json_type"):
+            return error_response(400, "malformed_request", _validation_message(exc))
     return error_response(422, "validation_failed", _validation_message(exc))
 
 

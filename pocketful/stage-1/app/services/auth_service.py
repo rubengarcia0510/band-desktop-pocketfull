@@ -39,14 +39,16 @@ def _new_user_id(prefix: str = "u") -> str:
 
 
 def _validate_email(email: object) -> str:
-    if not isinstance(email, str) or not EMAIL_REGEX.match(email):
+    if not isinstance(email, str):
+        raise_error(400, "malformed_request", "email must be a string")
+    if not EMAIL_REGEX.match(email):
         raise_error(422, "validation_failed", "email must be of the form local@domain")
     return email
 
 
 def _validate_password(password: object) -> str:
     if not isinstance(password, str):
-        raise_error(422, "validation_failed", "password must be a string")
+        raise_error(400, "malformed_request", "password must be a string")
     if len(password) < MIN_PASSWORD_LEN:
         raise_error(422, "validation_failed", "password must be at least 8 characters")
     if len(password) > MAX_PASSWORD_LEN:
@@ -56,7 +58,7 @@ def _validate_password(password: object) -> str:
 
 def _validate_display_name(name: object) -> str:
     if not isinstance(name, str):
-        raise_error(422, "validation_failed", "display_name must be a string")
+        raise_error(400, "malformed_request", "display_name must be a string")
     if not name:
         raise_error(422, "validation_failed", "display_name is required")
     if len(name) > MAX_DISPLAY_NAME_LEN:

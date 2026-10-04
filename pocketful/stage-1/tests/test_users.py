@@ -51,6 +51,27 @@ async def test_signup_duplicate_email_returns_email_taken(client, fresh_db):
     assert r2.json()["error"]["code"] == "email_taken"
 
 
+async def test_signup_malformed_json_returns_400(client, fresh_db):
+    """spec §5: unparseable body -> 400 malformed_request."""
+    r = await client.post(
+        "/auth/signup",
+        content=b"{not valid json",
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["error"]["code"] == "malformed_request"
+
+
+async def test_signup_wrong_field_type_returns_400(client, fresh_db):
+    """spec §5: a field of the wrong JSON type -> 400 malformed_request."""
+    r = await client.post(
+        "/auth/signup",
+        json={"email": "x@example.com", "password": 12345, "display_name": "X"},
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["error"]["code"] == "malformed_request"
+
+
 async def test_signup_derived_handle_taken_returns_handle_taken(client, fresh_db):
     r1 = await client.post(
         "/auth/signup",
