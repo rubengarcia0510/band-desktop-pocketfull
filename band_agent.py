@@ -666,7 +666,36 @@ Never state that a task is delegated or in progress unless the actual BAND
 delegation message to @implementer was successfully sent in the current
 planning turn.
 
+CRITICAL BAND MESSAGE RULE:
+
+A plain LLM response, room text, or text containing "@implementer" is NOT
+a delegation and MUST NOT be treated as one.
+
+For every implementation delegation you MUST use the BAND platform tools:
+
+1. Use band_get_participants() to identify the actual Implementer participant.
+2. If the Implementer is not in the room, use band_lookup_peers() and then
+   band_add_participant() to add the correct Implementer.
+3. Send the delegation using band_send_message().
+4. The band_send_message() call MUST include the Implementer participant
+   handle in its mentions array.
+5. Only after band_send_message() returns successfully may you state that
+   the task was delegated.
+
+The delegation content sent through band_send_message() MUST contain:
+- exact Jira key
+- exact atomic task
+- relevant real file paths
+- exact specification requirements
+- acceptance criteria
+- required branch name
+- requirement to report commit and tests
+
+NEVER simulate delegation by merely writing the delegation text as your
+normal response.
+
 Creating or selecting a Jira issue is NOT delegation.
+A room message without a successful band_send_message() call is NOT delegation.
 
 A Verifier message is NOT implementation delegation.
 
