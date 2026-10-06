@@ -733,7 +733,7 @@ def _build_planner_adapter(
             "delegando el trabajo concreto a los agentes correspondientes y "
             "usando las herramientas de BAND para comunicarte con ellos."
         ),
-        custom_section=PLANNER_CUSTOM_SECTION,
+        custom_section=PLANNER_CUSTOM_SECTION + os.getenv("PLANNER_RECOVERY_CONTEXT", ""),
         verbose=True,
         additional_tools=[
             (JiraBacklogInput, jira_create_and_freeze_backlog),
@@ -890,7 +890,38 @@ def build_band_agent(
     )
 
 
+def _planner_recovery_context() -> str:
+    """Recover the authoritative frozen backlog before a Planner starts."""
+    plan_id = os.getenv("DARK_FACTORY_PLAN_ID", "").strip()
+
+    if not plan_id:
+        return ""
+
+    try:
+        result = jira_get_frozen_backlog(
+            JiraBacklogQueryInput(plan_id=plan_id)
+        )
+    except Exception as exc:
+        return f"\nPlanner recovery lookup failed: {exc}\n"
+
+    if result.startswith("FROZEN_BACKLOG "):
+        return (
+            "\nRECOVERY CONTEXT — AUTHORITATIVE FROZEN BACKLOG:\n"
+            f"{result}\n"
+            "The backlog already exists and is frozen. "
+            "Do NOT recreate or replace it. "
+            "Continue execution from the existing unblocked task.\n"
+        )
+
+    return f"\nPlanner recovery context: {result}\n"
+
+
 async def _run_seat(seat_name: str) -> None:
+    if seat_name.lower() == "planner":
+        recovery = _planner_recovery_context()
+        if recovery:
+            os.environ["PLANNER_RECOVERY_CONTEXT"] = recovery
+
     agent = build_band_agent(seat_name)
     await agent.run()
 
