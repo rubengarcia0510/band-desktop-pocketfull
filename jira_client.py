@@ -96,6 +96,33 @@ class JiraClient:
             {"fields": fields},
         )
 
+    def update_description(self, issue_key, description):
+        payload = {
+            "fields": {
+                "description": {
+                    "type": "doc",
+                    "version": 1,
+                    "content": [
+                        {
+                            "type": "paragraph",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": description,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            }
+        }
+
+        return self._request(
+            "PUT",
+            f"/rest/api/3/issue/{quote(issue_key)}",
+            payload,
+        )
+
     def add_comment(self, issue_key, comment):
         payload = {
             "body": {

@@ -1,39 +1,44 @@
-# stage-1 — Pocketful Stage 1 slice
+# Stage 1
 
-Containerized HTTP service implementing the wallet/payments domain from
-`band-ai/dark-factory-wearedevs` → `pocketful/spec/stage-1.md`.
+Containerized HTTP service for the Stage 1 workspace.
 
-## Status
+## Implemented
 
-| Subtask | Scope | Status |
-|---|---|---|
-| ST-1.1 | Recon + scaffolding (`/health`, `POST /_test/reset`, container, run/test) | scaffolded |
-| ST-1.2 | Users + balances in integer minor units + invariants | pending |
-| ST-1.3 | Atomic transfers + idempotency + auth (TBD per Planner rule "spec manda") | pending |
-| ST-1.4 | Activity feed with visibility rules | pending |
-| ST-1.5 | Concurrency safety + idempotent retries under load | pending |
+- Health check
+- Test reset endpoint
+- User signup and login
+- Authentication
+- User balance inspection
+- Payment creation
+- Payment request creation and listing
+- Integer minor-unit balance handling
+- SQLite persistence with WAL
+- Atomic SQLite write transactions
+- Idempotency keys with canonical request-body hashing
+- Idempotency replay and conflict handling
+- Automated unit, API, idempotency, transaction, and verification tests
 
-## Container
+## Run with Docker
 
-```bash
-docker build -t pocketful-stage-1 .
-docker run --rm -p 8080:8080 -e PORT=8080 pocketful-stage-1
-```
+    docker build -t pocketful-stage-1 .
+    docker run --rm -p 8080:8080 -e PORT=8080 pocketful-stage-1
 
-See `RUN.md` for the single-line build + start.
+The service listens on 0.0.0.0:8080.
 
-## Local dev
+Health check:
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8080
-```
+    curl http://localhost:8080/health
 
-Tests:
+Expected response: {"status":"ok"}
 
-```bash
-source .venv/bin/activate
-pytest
-```
+## Local development
+
+    python3 -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
+    uvicorn app.main:app --host 0.0.0.0 --port 8080
+
+Run the tests:
+
+    source .venv/bin/activate
+    pytest
